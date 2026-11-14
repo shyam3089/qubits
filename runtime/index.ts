@@ -35,7 +35,7 @@ interface HttpActionInstance {__action:string;fields:Record<string,Signal>;invok
 interface SocketInstance {__socket:string;__action:string;fields:Record<string,Signal>;invoke:(arguments_:Value[])=>void;send:(value:string)=>void;close:()=>void}
 interface SseInstance {__sse:string;__action:string;fields:Record<string,Signal>;invoke:(arguments_:Value[])=>void;close:()=>void}
 type SharedRegistry=Map<SharedDefinition,SharedInstance>;
-type ServiceRegistry=Map<ServiceDefinition,{instance:ServiceInstance;dispose:Dispose}>;
+type ServiceRegistry=Map<ServiceDefinition,{instance:ServiceInstance;dispose:Dispose;clientContext:string}>;
 const serviceRegistryIds=new WeakMap<ServiceRegistry,number>();let serviceRegistryIdentity=0;
 interface FileEventValue {__event:true;file:File|null;files:File[]}
 type Scope=Record<string,Signal|Instance|SharedInstance|ServiceInstance|HttpResourceInstance|HttpActionInstance|SocketInstance|SseInstance|FileEventValue|(()=>Value)>;
@@ -244,15 +244,16 @@ function mountComponentInternal(target:Element|undefined,model:Model,components:
   }
   if(model.services)for(const entry of model.services){
     if(Object.hasOwn(scope,entry.name)||!Number.isSafeInteger(entry.index)||entry.index<0)throw new TypeError(`Invalid service ${entry.name}`);
-    const definition=services[entry.index];if(!definition||definition.name!==entry.name||!definition.model||!Array.isArray(definition.services))throw new TypeError(`Invalid service definition ${entry.name}`);
+    const definition=services[entry.index];if(!definition||definition.name!==entry.name||!definition.model||!Array.isArray(definition.services))throw new TypeError(`Invalid service definition ${entry.name}`);const localClients=new Set(Object.keys(definition.model.httpClients??{})),requiredClients=[...new Set([...(definition.model.queries??[]),...(definition.model.httpActions??[])].map(item=>item.client).filter((name):name is string=>Boolean(name)&&!localClients.has(name!)))].sort(),clientContext=JSON.stringify(requiredClients.map(name=>[name,model.httpClients?.[name]??null]));
     let registered=serviceRegistry.get(definition);
+    if(registered&&registered.clientContext!==clientContext)throw new TypeError(`Service ${entry.name} requires one HTTP client context per application`);
     if(!registered){
       if(serviceInitializing.has(definition))throw new TypeError(`Service dependency cycle involving ${entry.name}`);serviceInitializing.add(definition);
       try{
         let httpScope=serviceRegistryIds.get(serviceRegistry);if(!httpScope){httpScope=++serviceRegistryIdentity;serviceRegistryIds.set(serviceRegistry,httpScope);}const serviceModel={...definition.model,httpScope,httpClients:{...(model.httpClients??{}),...(definition.model.httpClients??{})}},serviceTarget=target!.ownerDocument.createElement('qbits-service'),dispose=mountComponentTree(serviceTarget,serviceModel,[],{}, {},limits,componentDepth+1,budget,undefined,{},[],[...definition.services],sharedRegistry,serviceRegistry,serviceInitializing),serviceScope=dispose.serviceScope;
         if(!serviceScope)throw new TypeError(`Service ${entry.name} failed to initialize`);const members:ServiceInstance['members']=Object.create(null);
         for(const declaration of [...(serviceModel.queries??[]),...(serviceModel.httpActions??[])]){const member=serviceScope[declaration.name];if(!member||typeof member!=='object'||Array.isArray(member)||!('__resource'in member)&&!('__action'in member))throw new TypeError(`Invalid service member ${entry.name}.${declaration.name}`);members[declaration.name]=member;}
-        registered={instance:{__service:entry.name,members},dispose};serviceRegistry.set(definition,registered);
+        registered={instance:{__service:entry.name,members},dispose,clientContext};serviceRegistry.set(definition,registered);
       }finally{serviceInitializing.delete(definition);}
     }
     scope[entry.name]=registered.instance;
